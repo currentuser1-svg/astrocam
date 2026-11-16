@@ -1,0 +1,9 @@
+captures/
+settings.json
+presets/
+__pycache__/
+*.ser
+*.avi
+*.mkv
+*.mp4
+go2rtc_controls.json
