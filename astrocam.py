@@ -76,6 +76,11 @@ DEFAULTS = {
     "controls": {}, "release_go2rtc": True,
 }
 
+DAY_HINT = ("День: 1) запустите превью и наведите кроп на статичный объект (здание, вывеска, антенна); "
+            "2) «Зафиксировать авто» на вкладке «Камера» — фокус, выдержка и баланс белого замрут; "
+            "3) подстройте фокус по показателю «резкость», выдержку сделайте на 1–2 шага короче, если картинка не темнеет сильно — "
+            "меньше смаза от дрожания воздуха; 4) 300–1000 кадров. Дальше AutoStakkert: Surface, Drizzle 1.5x.")
+
 BUILTIN_PRESETS = {
     "Луна — сырой Y, 1080p": dict(input="yuyv422", size="1920x1080", fps="5", format="ser", color="mono",
                                    duration=120.0, frames=600, skip=10, crop_on=False, target="Moon",
@@ -95,9 +100,26 @@ BUILTIN_PRESETS = {
     "Видео H.264 (NVENC) 1080p30": dict(input="mjpeg", size="1920x1080", fps="30", format="mp4_h264", encoder="h264_nvenc",
                                         color="color", qmode="quality", quality=20, duration=60.0, frames=0, skip=0,
                                         crop_on=False, target="Video"),
-    "Таймлапс — каждый 25-й кадр, H.264": dict(input="mjpeg", size="1920x1080", fps="5", format="mp4_h264", encoder="libx264",
-                                               color="color", qmode="quality", quality=20, duration=3600.0, frames=0,
-                                               every=25, skip=10, crop_on=False, target="Timelapse"),
+    "Таймлапс — кадр раз в 4 с, H.264": dict(input="mjpeg", size="1920x1080", fps="7.5", format="mp4_h264", encoder="libx264",
+                                             color="color", qmode="quality", quality=20, duration=3600.0, frames=0,
+                                             every=30, skip=10, crop_on=False, target="Timelapse"),
+    "День — сверхразрешение, цвет (SER)": dict(input="yuyv422", size="1920x1080", fps="5", format="ser", color="color",
+                                              duration=0.0, frames=300, skip=10, every=1, series=1, crop_on=True,
+                                              crop=[760, 340, 400, 400], track=False, target="Day",
+                                              controls={"Sharpness": [0, False], "BacklightCompensation": [0, False]},
+                                              hint=DAY_HINT),
+    "День — сверхразрешение, моно Y (макс. детали)": dict(input="yuyv422", size="1920x1080", fps="5", format="ser", color="mono",
+                                                         duration=0.0, frames=300, skip=10, every=1, series=1, crop_on=True,
+                                                         crop=[760, 340, 400, 400], track=False, target="DayMono",
+                                                         controls={"Sharpness": [0, False], "BacklightCompensation": [0, False]},
+                                                         hint=DAY_HINT),
+    "День — движущиеся объекты, MJPEG 30 к/с": dict(input="mjpeg", size="1920x1080", fps="30", format="mjpeg_copy",
+                                                   duration=15.0, frames=0, skip=0, every=1, series=1, crop_on=False,
+                                                   track=False, target="Moving",
+                                                   controls={"Sharpness": [0, False], "BacklightCompensation": [0, False]},
+                                                   hint="Машины и всё движущееся стекать нельзя — смажется. Снимайте короткой выдержкой "
+                                                        "(«Зафиксировать авто», затем выдержку на 1–2 шага короче) и берите лучшие кадры: "
+                                                        "«Лучшие кадры из записи…» на вкладке «Вывод»."),
 }
 
 
@@ -434,6 +456,9 @@ class App:
         ttk.Button(bb, text="Астро-база", command=self.astro_controls).pack(side="left", padx=3)
         ttk.Button(bb, text="По умолчанию", command=self.default_controls).pack(side="left")
         ttk.Button(bb, text="Окно драйвера…", command=self.driver_dialog).pack(side="left", padx=3)
+        bb2 = ttk.Frame(f)
+        bb2.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        ttk.Button(bb2, text="Зафиксировать авто (выдержка, фокус, баланс белого)", command=self.lock_auto).pack(side="left")
         self.ctl_frame = ttk.Frame(f)
         self.ctl_frame.grid(row=9, column=0, columnspan=2, sticky="nsew")
         self.ctl_frame.columnconfigure(1, weight=1)
@@ -542,6 +567,10 @@ class App:
         self._row(f, "Оптика", lambda p: ttk.Entry(p, textvariable=self.v_telescope), 17)
         self.v_notes = tk.StringVar()
         self._row(f, "Заметки", lambda p: ttk.Entry(p, textvariable=self.v_notes), 18)
+        tf = ttk.Frame(f)
+        tf.grid(row=20, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Button(tf, text="Лучшие кадры из записи…", command=self.best_frames).pack(side="left")
+        ttk.Label(tf, text=" сортирует кадры SER/AVI/MP4 по резкости, лучшие → PNG", foreground="#777").pack(side="left")
         self.v_release = tk.BooleanVar()
         ttk.Checkbutton(f, text="Автоматически забирать камеру у go2rtc и возвращать при выходе",
                         variable=self.v_release).grid(row=19, column=0, columnspan=2, sticky="w", pady=(6, 0))
@@ -550,6 +579,14 @@ class App:
 
     # ------------------------------------------------------------------ config <-> UI
     def _apply_cfg_to_ui(self, cfg=None):
+        self._loading = True        # no clamping/estimates while fields are half-updated
+        try:
+            self._apply_cfg_to_ui_inner(cfg)
+        finally:
+            self._loading = False
+        self.update_estimate()
+
+    def _apply_cfg_to_ui_inner(self, cfg=None):
         c = cfg or self.cfg
         g = lambda k: c.get(k, DEFAULTS[k])
         self.v_device.set(g("device"))
@@ -675,7 +712,8 @@ class App:
         want = getattr(self, "_want_fps", None)
         self.v_fps.set(want if want in vals else vals[-1])
         self._want_input = self._want_size = self._want_fps = None
-        self.clamp_crop()
+        if not getattr(self, "_loading", False):
+            self.clamp_crop()
         self.update_estimate()
 
     def frame_size(self):
@@ -816,6 +854,31 @@ class App:
     def default_controls(self):
         self.apply_controls({p["name"]: [p["default"], bool(p["caps"] & 1)] for p in self.ctl_info if p["name"] not in ("Pan", "Tilt", "Zoom")}
                             | {n: [0, False] for n in ("Pan", "Tilt", "Zoom") if n in self.ctl_widgets})
+
+    def lock_auto(self):
+        """let the camera find exposure/focus/WB automatically, then freeze those values as manual ones"""
+        dev = self.v_device.get()
+        names = [p["name"] for p in self.ctl_info if p["caps"] & 1 and p["name"] in ("Exposure", "Focus", "WhiteBalance")]
+        if not names:
+            return
+        if self.mode == "idle":
+            self.logline("«Зафиксировать авто»: запустите превью — камера подстраивается только во время потока.")
+            return
+        self.logline("Автонастройка… (4 с, держите объект в кадре)")
+
+        def work():
+            self._camctl_set(dev, [f"{n}=auto" for n in names])
+            time.sleep(4)
+            rc, out, err = run([CAMCTL, "get", dev], 15)
+            if rc != 0:
+                self.logline("camctl: " + err.strip()[:200])
+                return
+            vals = {p["name"]: p["value"] for p in json.loads(out)["props"]}
+            self._camctl_set(dev, [f"{n}={vals[n]}:manual" for n in names if n in vals])
+            self.logline("Зафиксировано: " + ", ".join(
+                f"{n}={exposure_text(vals[n]) if n == 'Exposure' else vals[n]}" for n in names if n in vals))
+            self.ui(self.read_controls)
+        threading.Thread(target=work, daemon=True).start()
 
     def driver_dialog(self):
         dev = self.v_device.get()
@@ -966,6 +1029,8 @@ class App:
         return w * h * planes
 
     def update_estimate(self):
+        if getattr(self, "_loading", False):
+            return
         try:
             fk = self.format_key()
             fps = self.fps()
@@ -1504,6 +1569,19 @@ class App:
             self.pb["value"] = 100
         self.stop_req = False
 
+    # ------------------------------------------------------------------ best frames
+    def best_frames(self):
+        path = filedialog.askopenfilename(initialdir=self.v_outdir.get() or APP_DIR, title="Запись для отбора кадров",
+                                          filetypes=[("Видео/SER", "*.ser *.avi *.mkv *.mp4"), ("Все", "*.*")])
+        if not path:
+            return
+        from tkinter import simpledialog
+        k = simpledialog.askinteger("AstroCam", "Сколько лучших кадров сохранить?", initialvalue=10, minvalue=1, maxvalue=10000)
+        if not k:
+            return
+        self.logline(f"Оцениваю резкость кадров: {os.path.basename(path)}")
+        threading.Thread(target=lambda: self.logline(best_frames(path, k, self.ffmpeg, self.logline)), daemon=True).start()
+
     # ------------------------------------------------------------------ snapshot
     def snapshot(self):
         if self.latest is None:
@@ -1650,7 +1728,9 @@ class App:
 
     def load_preset(self, name):
         if name in BUILTIN_PRESETS:
-            c = dict(self.collect_cfg())
+            cur = self.collect_cfg()
+            c = dict(DEFAULTS)
+            c.update({k: cur[k] for k in ("device", "outdir", "template", "observer", "telescope", "release_go2rtc")})
             c.update(BUILTIN_PRESETS[name])
         else:
             c = dict(DEFAULTS)
@@ -1658,10 +1738,11 @@ class App:
         c["device"] = c.get("device") if c.get("device") in (self.cb_device["values"] or ()) else self.v_device.get()
         c["outdir"] = c.get("outdir") or self.v_outdir.get()
         self._apply_cfg_to_ui(c)
-        self._fill_modes()
         if c.get("controls"):
             self.apply_controls(c["controls"])
         self.logline(f"Пресет: {name}")
+        if c.get("hint"):
+            self.logline("💡 " + c["hint"])
 
     def save_preset(self):
         win = tk.Toplevel(self.root)
@@ -1801,6 +1882,71 @@ class Tracker:
         x = max(0, min(self.W - self.w, x))
         y = max(0, min(self.H - self.h, y))
         return x, y
+
+
+def iter_frames(path, ffmpeg):
+    """yields frames (HxW uint8 or HxWx3 RGB) from a SER file (native) or any video (via ffmpeg)"""
+    if path.lower().endswith(".ser"):
+        with open(path, "rb") as f:
+            hdr = f.read(178)
+            _, _, color, _, w, h, depth, n = struct.unpack("<14s7i", hdr[:42])
+            if depth > 8:
+                raise ValueError("поддерживается только 8-битный SER")
+            planes = 3 if color in (100, 101) else 1
+            fb = w * h * planes
+            for _ in range(n):
+                b = f.read(fb)
+                if len(b) < fb:
+                    break
+                img = np.frombuffer(b, np.uint8).reshape((h, w, 3) if planes == 3 else (h, w))
+                yield img[..., ::-1] if color == 101 else img
+        return
+    ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe") if os.path.isabs(ffmpeg) else "ffprobe"
+    pr = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                         "-of", "csv=p=0", path], capture_output=True, text=True, creationflags=NOWIN)
+    w, h = map(int, pr.stdout.strip().split(",")[:2])
+    p = subprocess.Popen([ffmpeg, "-v", "error", "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+                         stdout=subprocess.PIPE, creationflags=NOWIN)
+    fb = w * h * 3
+    try:
+        while True:
+            b = p.stdout.read(fb)
+            if len(b) < fb:
+                break
+            yield np.frombuffer(b, np.uint8).reshape(h, w, 3)
+    finally:
+        p.kill()
+
+
+def best_frames(path, k, ffmpeg, log=print):
+    """rank frames by brightness-normalised Laplacian energy, save the k sharpest as PNG + scores.csv; returns a summary"""
+    import heapq
+    try:
+        scores, keep = [], []
+        for i, img in enumerate(iter_frames(path, ffmpeg)):
+            y = luma(img)
+            sc = focus_metric(y) / max(1.0, float(y.mean())) ** 2 * 1e4
+            scores.append(sc)
+            item = (sc, i, img.copy())
+            if len(keep) < k:
+                heapq.heappush(keep, item)
+            elif sc > keep[0][0]:
+                heapq.heapreplace(keep, item)
+            if i and i % 200 == 0:
+                log(f"  …{i} кадров")
+        if not scores:
+            return "Лучшие кадры: в файле нет кадров"
+        out = os.path.splitext(path)[0] + "_best"
+        os.makedirs(out, exist_ok=True)
+        for rank, (sc, i, img) in enumerate(sorted(keep, key=lambda t: -t[0]), 1):
+            Image.fromarray(img).save(os.path.join(out, f"rank{rank:03d}_frame{i + 1:05d}.png"))
+        with open(os.path.join(out, "scores.csv"), "w", encoding="utf-8") as f:
+            f.write("frame,score\n" + "".join(f"{i + 1},{sc:.3f}\n" for i, sc in enumerate(scores)))
+        srt = sorted(scores)
+        return (f"✔ Лучшие {len(keep)} из {len(scores)} кадров → {out} "
+                f"(резкость: лучший {srt[-1]:.1f}, медиана {srt[len(srt) // 2]:.1f}, худший {srt[0]:.1f})")
+    except Exception as e:
+        return f"Лучшие кадры: ошибка {e!r}"
 
 
 def stretch(img):
